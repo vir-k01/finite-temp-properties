@@ -171,7 +171,7 @@ def test_amorphous_curve_refuses_uncovered_range():
 # --------------------------------------------------- templates and flows
 
 def test_msd_template_renders_fully(srtio3, tmp_path):
-    from finite_temp_properties.workflow.core import CrystalMSDMaker
+    from finite_temp_properties.workflow.jobs import CrystalMSDMaker
     m = CrystalMSDMaker(settings={"temperature": 950.0})
     m.input_set_generator.update_settings(
         h.species_settings(srtio3) | h.msd_blocks(srtio3.n_elems),
@@ -185,7 +185,7 @@ def test_msd_template_renders_fully(srtio3, tmp_path):
 
 
 def test_solid_flow_shape(srtio3):
-    from finite_temp_properties.workflow.core import SolidFreeEnergyMaker
+    from finite_temp_properties.workflow.flows import SolidFreeEnergyMaker
     flow = SolidFreeEnergyMaker().make(srtio3)
     names = [j.name for j in flow.jobs]
     assert names == ["BaseLammpsMaker.make", "frenkel_ladd",
@@ -194,7 +194,7 @@ def test_solid_flow_shape(srtio3):
 
 
 def test_liquid_flow_shape(srtio3):
-    from finite_temp_properties.workflow.core import LiquidFreeEnergyMaker
+    from finite_temp_properties.workflow.flows import LiquidFreeEnergyMaker
     flow = LiquidFreeEnergyMaker(with_switch=False).make(srtio3)
     assert [j.name for j in flow.jobs] == [
         "BaseLammpsMaker.make", "ufm_switch_leg1", "ufm_switch_leg2",
@@ -202,9 +202,10 @@ def test_liquid_flow_shape(srtio3):
 
 
 def test_gibbs_flow_shares_anchor_temperatures(srtio3):
-    from finite_temp_properties.workflow.core import (
-        GibbsCurveMaker, LiquidFreeEnergyMaker, MeltEquilibrationMaker,
-        SolidFreeEnergyMaker, CrystalMSDMaker)
+    from finite_temp_properties.workflow.flows import (
+        GibbsCurveMaker, LiquidFreeEnergyMaker, SolidFreeEnergyMaker)
+    from finite_temp_properties.workflow.jobs import (
+        CrystalMSDMaker, MeltEquilibrationMaker)
     maker = GibbsCurveMaker(
         solid_maker=SolidFreeEnergyMaker(
             msd_maker=CrystalMSDMaker(settings={"temperature": 900.0})),

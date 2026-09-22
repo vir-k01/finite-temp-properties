@@ -47,7 +47,7 @@ target_kwargs    = {"lammps_cmd": "srun -N1 -n1 --gpus=1 /path/to/build_with_tf/
 from jobflow import run_locally
 from pymatgen.core import Composition, Structure
 
-from finite_temp_properties.workflow.core import GibbsCurveMaker
+from finite_temp_properties.workflow.flows import GibbsCurveMaker
 
 crystal = Structure.from_file("relaxed_supercell.json")
 
@@ -110,11 +110,15 @@ the two G(T) formulas.
 
 ```
 src/finite_temp_properties/
-├── templates/          LAMMPS input templates (${...} filled from maker settings)
-├── utils/helpers.py    defaults, per-species input blocks, output parsers,
-│                       reference free energies (Einstein, ideal gas, UF ladder)
-├── schemas/            pydantic documents the analysis jobs return
-└── workflow/core.py    stage makers, analysis jobs, flow makers
+├── templates/             LAMMPS input templates (${...} filled from maker settings)
+├── utils/helpers.py       defaults, per-species input blocks, output parsers,
+│                          reference free energies (Einstein, ideal gas, UF ladder)
+├── schemas/               pydantic documents the analysis jobs return
+└── workflow/
+    ├── jobs/makers.py     one maker per LAMMPS stage
+    ├── jobs/analysis.py   the jobs that parse a stage and return a document
+    └── flows/core.py      SolidFreeEnergyMaker, LiquidFreeEnergyMaker,
+                           GibbsCurveMaker -- what you build off of
 ```
 
 Stages that need numbers measured by the previous run (spring constants from
