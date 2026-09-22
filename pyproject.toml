@@ -18,6 +18,7 @@ dependencies = [
   "jobflow",
   "atomate2>=0.1.5",
   "calphy",
+  "pyscal3<4",  # calphy 2.x imports pyscal3.System, removed in pyscal3 4
   "py_oats @ git+https://github.com/vir-k01/py-OATS.git",
 ]
 
