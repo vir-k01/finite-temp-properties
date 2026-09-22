@@ -162,8 +162,8 @@ def test_solid_flow_shape(srtio3):
     from finite_temp_properties.workflow.core import SolidFreeEnergyMaker
     flow = SolidFreeEnergyMaker().make(srtio3)
     names = [j.name for j in flow.jobs]
-    assert names == ["BaseLammpsMaker.make", "run_frenkel_ladd",
-                     "analyze_solid_free_energy", "run_potential_switch",
+    assert names == ["BaseLammpsMaker.make", "frenkel_ladd",
+                     "analyze_solid_free_energy", "potential_switch",
                      "analyze_potential_switch"]
 
 
@@ -171,7 +171,7 @@ def test_liquid_flow_shape(srtio3):
     from finite_temp_properties.workflow.core import LiquidFreeEnergyMaker
     flow = LiquidFreeEnergyMaker(with_switch=False).make(srtio3)
     assert [j.name for j in flow.jobs] == [
-        "BaseLammpsMaker.make", "run_ufm_leg1", "run_ufm_leg2",
+        "BaseLammpsMaker.make", "ufm_switch_leg1", "ufm_switch_leg2",
         "analyze_liquid_free_energy"]
 
 

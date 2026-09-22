@@ -1,11 +1,12 @@
 """Makers and flows for finite-temperature free energies.
 
 Same logic as py-OATS: every LAMMPS stage is a CustomLammpsMaker whose
-``settings`` are merged on top of module defaults, templates live in
-templates/ and are filled from settings, and any stage that needs numbers
-measured by a PREVIOUS job (spring constants, sigmas) is chained through a
-small @job that reads them at runtime and replaces itself with the real
-LAMMPS job -- the run_production_md pattern.
+``settings`` are merged on top of module defaults and templates are filled
+from settings. A stage that needs numbers measured by a PREVIOUS job (spring
+constants, sigmas) has a second entry point, ``make_from(<previous dir>)``:
+one job whose body reads those files at runtime, configures the input, and
+runs LAMMPS -- jobflow resolves the directory reference when the job starts,
+so no separate resolver/replace job is needed.
 
 The flows this module is built around:
 
@@ -18,9 +19,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from jobflow import Flow, Maker, Response, job
+from jobflow import Flow, Maker, job
 from pymatgen.core import Composition, Structure
 
+from atomate2.lammps.jobs.base import BaseLammpsMaker, lammps_job
 from atomate2.lammps.jobs.core import CustomLammpsMaker
 
 from finite_temp_properties.schemas.free_energy import (
@@ -68,9 +70,9 @@ class CrystalMSDMaker(CustomLammpsMaker):
 class FrenkelLaddMaker(CustomLammpsMaker):
     """Switch the crystal to an Einstein crystal and back (fix ti/spring).
 
-    The spring constants come from a CrystalMSDMaker run, so this maker is
-    normally launched through ``run_frenkel_ladd(msd_dir, maker)``, which
-    reads them at runtime. Writes ti.dat (forward sweep, then backward).
+    The spring constants come from a CrystalMSDMaker run: chain with
+    ``make_from(msd_dir)``, which reads them when the job starts. Writes
+    ti.dat (forward sweep, then backward).
     """
 
     name: str = "frenkel_ladd"
@@ -81,14 +83,26 @@ class FrenkelLaddMaker(CustomLammpsMaker):
         self.settings = {**h.FRENKEL_LADD_DEFAULTS, **self.settings}
         super().__post_init__()
 
-    def make(self, structure: Structure, spring_constants: list[float], **kwargs):
+    def _configure(self, structure: Structure, spring_constants: list[float]):
         s = self.settings
         k = [s["spring_scale"] * ki for ki in spring_constants]
         self.input_set_generator.update_settings(
             h.species_settings(structure)
             | h.spring_blocks(k, s["n_switch"], s["n_equil"]),
             validate_params=False)
+
+    def make(self, structure: Structure, spring_constants: list[float], **kwargs):
+        self._configure(structure, spring_constants)
         return super().make(input_structure=structure, **kwargs)
+
+    @lammps_job
+    def make_from(self, msd_dir: str):
+        """One job: read k_i = 3kBT/<dr^2>_i from the MSD run, then switch."""
+        structure = h.structure_from(str(msd_dir), "equil.data")
+        k, _ = h.spring_constants_from_msd(
+            str(msd_dir), self.settings["temperature"], structure.n_elems)
+        self._configure(structure, k)
+        return BaseLammpsMaker.make.original(self, input_structure=structure)
 
 
 @dataclass
@@ -120,9 +134,8 @@ class MeltEquilibrationMaker(CustomLammpsMaker):
 class UFMSwitchLeg1Maker(CustomLammpsMaker):
     """Switch the real melt to a multi-sigma Uhlenbeck-Ford fluid.
 
-    Sigmas come from the melt run's RDFs, so this is normally launched
-    through ``run_ufm_leg1(melt_dir, maker)``. Writes fwd.dat, bwd.dat and
-    the endpoint cell ufm_endpoint.data.
+    Sigmas come from the melt run's RDFs: chain with ``make_from(melt_dir)``.
+    Writes fwd.dat, bwd.dat and the endpoint cell ufm_endpoint.data.
     """
 
     name: str = "ufm_switch_leg1"
@@ -134,7 +147,7 @@ class UFMSwitchLeg1Maker(CustomLammpsMaker):
         self.settings = {**h.UFM_SWITCH_DEFAULTS, **self.settings}
         super().__post_init__()
 
-    def make(self, structure: Structure, sigmas: list[float], **kwargs):
+    def _configure(self, structure: Structure, sigmas: list[float]):
         s = self.settings
         eps = s["ufm_p"] * h.KB * s["temperature"]
         self.input_set_generator.update_settings(
@@ -144,14 +157,25 @@ class UFMSwitchLeg1Maker(CustomLammpsMaker):
                     eps, sigmas, structure.n_elems),
             },
             validate_params=False)
+
+    def make(self, structure: Structure, sigmas: list[float], **kwargs):
+        self._configure(structure, sigmas)
         return super().make(input_structure=structure, **kwargs)
+
+    @lammps_job
+    def make_from(self, melt_dir: str):
+        """One job: sigmas from the melt's partial RDFs, then leg 1."""
+        structure = h.structure_from(str(melt_dir), "liq.data")
+        self._configure(structure,
+                        h.sigmas_from_rdf(str(melt_dir), structure.n_elems))
+        return BaseLammpsMaker.make.original(self, input_structure=structure)
 
 
 @dataclass
 class UFMSwitchLeg2Maker(CustomLammpsMaker):
     """Switch the multi-sigma UFM to the single-sigma fluid whose free energy
-    is calibrated. Normally launched through ``run_ufm_leg2(melt_dir,
-    leg1_dir, maker)``. Rerunning at ufm_p = 25 is the p-invariance test.
+    is calibrated. Chain with ``make_from(melt_dir, leg1_dir)``. Rerunning at
+    ufm_p = 25 is the p-invariance test.
     """
 
     name: str = "ufm_switch_leg2"
@@ -163,8 +187,8 @@ class UFMSwitchLeg2Maker(CustomLammpsMaker):
         self.settings = {**h.UFM_SWITCH_DEFAULTS, **self.settings}
         super().__post_init__()
 
-    def make(self, structure: Structure, sigmas: list[float],
-             sigma_single: float, **kwargs):
+    def _configure(self, structure: Structure, sigmas: list[float],
+                   sigma_single: float):
         s = self.settings
         n = structure.n_elems
         eps = s["ufm_p"] * h.KB * s["temperature"]
@@ -178,16 +202,30 @@ class UFMSwitchLeg2Maker(CustomLammpsMaker):
                     eps, [sigma_single] * len(h.type_pairs(n)), n, "ufm 2"),
             },
             validate_params=False)
+
+    def make(self, structure: Structure, sigmas: list[float],
+             sigma_single: float, **kwargs):
+        self._configure(structure, sigmas, sigma_single)
         return super().make(input_structure=structure, **kwargs)
+
+    @lammps_job
+    def make_from(self, melt_dir: str, leg1_dir: str):
+        """One job: sigma0 from the melt density, start from leg 1's endpoint."""
+        structure = h.structure_from(str(leg1_dir), "ufm_endpoint.data")
+        sigmas = h.sigmas_from_rdf(str(melt_dir), structure.n_elems)
+        vol_per_atom, _ = h.volume_and_enthalpy(str(melt_dir))
+        self._configure(structure, sigmas, h.sigma_for_target_x(vol_per_atom))
+        return BaseLammpsMaker.make.original(self, input_structure=structure)
 
 
 @dataclass
 class PotentialSwitchMaker(CustomLammpsMaker):
     """Transport a phase from the reference to the target potential (NPT).
 
-    Normally launched through ``run_potential_switch(source_dir, source_file,
-    maker)`` so it starts from the exact cell the TI legs used. Needs the
-    TARGET engine (e.g. the TF build) -- set run_lammps_kwargs accordingly.
+    Chain with ``make_from(source_dir, source_file)`` so it starts from the
+    exact cell the TI legs used (equil.data for a crystal, liq.data for a
+    melt). Needs the TARGET engine (e.g. the TF build) -- set
+    run_lammps_kwargs accordingly.
     """
 
     name: str = "potential_switch"
@@ -199,14 +237,24 @@ class PotentialSwitchMaker(CustomLammpsMaker):
         self.settings = {**h.POTENTIAL_SWITCH_DEFAULTS, **self.settings}
         super().__post_init__()
 
-    def make(self, structure: Structure, **kwargs):
+    def _configure(self, structure: Structure):
         self.input_set_generator.update_settings(
             h.species_settings(structure)
             | {"maybe_triclinic": h.triclinic_setting(structure)
                if self.settings["barostat"] == "tri"
                else "### orthogonal barostat"},
             validate_params=False)
+
+    def make(self, structure: Structure, **kwargs):
+        self._configure(structure)
         return super().make(input_structure=structure, **kwargs)
+
+    @lammps_job
+    def make_from(self, source_dir: str, source_file: str):
+        """One job: load the TI cell, then switch reference -> target."""
+        structure = h.structure_from(str(source_dir), source_file)
+        self._configure(structure)
+        return BaseLammpsMaker.make.original(self, input_structure=structure)
 
 
 @dataclass
@@ -259,48 +307,6 @@ class QuenchMaker(CustomLammpsMaker):
             },
             validate_params=False)
         return super().make(input_structure=structure, **kwargs)
-
-
-# ---------------------------------------------------------------------------
-# chaining jobs: read what the previous run measured, then replace with the
-# real LAMMPS job (the run_production_md pattern)
-# ---------------------------------------------------------------------------
-
-@job
-def run_frenkel_ladd(msd_dir: str, maker: FrenkelLaddMaker) -> Response:
-    """Spring constants from msd.dat, then the Frenkel-Ladd switch."""
-    structure = h.structure_from(msd_dir, "equil.data")
-    k, _ = h.spring_constants_from_msd(
-        msd_dir, maker.settings["temperature"], structure.n_elems)
-    return Response(replace=maker.make(structure, spring_constants=k))
-
-
-@job
-def run_ufm_leg1(melt_dir: str, maker: UFMSwitchLeg1Maker) -> Response:
-    """Sigmas from the melt's partial RDFs, then leg 1."""
-    structure = h.structure_from(melt_dir, "liq.data")
-    sigmas = h.sigmas_from_rdf(melt_dir, structure.n_elems)
-    return Response(replace=maker.make(structure, sigmas=sigmas))
-
-
-@job
-def run_ufm_leg2(melt_dir: str, leg1_dir: str,
-                 maker: UFMSwitchLeg2Maker) -> Response:
-    """sigma0 from the melt density, then leg 2 from leg 1's endpoint cell."""
-    structure = h.structure_from(leg1_dir, "ufm_endpoint.data")
-    sigmas = h.sigmas_from_rdf(melt_dir, structure.n_elems)
-    vol_per_atom, _ = h.volume_and_enthalpy(melt_dir)
-    return Response(replace=maker.make(
-        structure, sigmas=sigmas,
-        sigma_single=h.sigma_for_target_x(vol_per_atom)))
-
-
-@job
-def run_potential_switch(source_dir: str, source_file: str,
-                         maker: PotentialSwitchMaker) -> Response:
-    """The reference -> target switch, from the exact cell the TI legs used."""
-    structure = h.structure_from(source_dir, source_file)
-    return Response(replace=maker.make(structure))
 
 
 # ---------------------------------------------------------------------------
@@ -441,7 +447,7 @@ class SolidFreeEnergyMaker(Maker):
 
     def make(self, structure: Structure) -> Flow:
         msd = self.msd_maker.make(structure)
-        fl = run_frenkel_ladd(msd.output.dir_name, self.frenkel_ladd_maker)
+        fl = self.frenkel_ladd_maker.make_from(msd.output.dir_name)
         doc = analyze_solid_free_energy(
             msd.output.dir_name, fl.output.dir_name,
             temperature=self.msd_maker.settings["temperature"],
@@ -449,8 +455,7 @@ class SolidFreeEnergyMaker(Maker):
         jobs = [msd, fl, doc]
         switch_doc = None
         if self.with_switch:
-            sw = run_potential_switch(msd.output.dir_name, "equil.data",
-                                      self.switch_maker)
+            sw = self.switch_maker.make_from(msd.output.dir_name, "equil.data")
             switch_doc = analyze_potential_switch(
                 sw.output.dir_name, self.switch_maker.settings["temperature"])
             jobs += [sw, switch_doc]
@@ -486,9 +491,9 @@ class LiquidFreeEnergyMaker(Maker):
 
     def make(self, structure: Structure) -> Flow:
         melt = self.melt_maker.make(structure)
-        leg1 = run_ufm_leg1(melt.output.dir_name, self.leg1_maker)
-        leg2 = run_ufm_leg2(melt.output.dir_name, leg1.output.dir_name,
-                            self.leg2_maker)
+        leg1 = self.leg1_maker.make_from(melt.output.dir_name)
+        leg2 = self.leg2_maker.make_from(melt.output.dir_name,
+                                         leg1.output.dir_name)
         doc = analyze_liquid_free_energy(
             melt.output.dir_name, leg1.output.dir_name, leg2.output.dir_name,
             temperature=self.melt_maker.settings["temperature"],
@@ -496,8 +501,7 @@ class LiquidFreeEnergyMaker(Maker):
         jobs = [melt, leg1, leg2, doc]
         switch_doc = None
         if self.with_switch:
-            sw = run_potential_switch(melt.output.dir_name, "liq.data",
-                                      self.switch_maker)
+            sw = self.switch_maker.make_from(melt.output.dir_name, "liq.data")
             switch_doc = analyze_potential_switch(
                 sw.output.dir_name, self.switch_maker.settings["temperature"])
             jobs += [sw, switch_doc]
@@ -515,6 +519,10 @@ class GibbsCurveMaker(Maker):
 
     A melt given as a Composition is packed into an amorphous cell with
     py-OATS's structure generator (at build time); a Structure is used as-is.
+
+    ``temperature_crystal`` (the anchor T0) and ``temperature_melt`` (the
+    anchor Ta) are pushed into every stage they govern; leave them None to
+    keep whatever the sub-makers were built with.
     """
 
     name: str = "gibbs_curve"
@@ -527,8 +535,21 @@ class GibbsCurveMaker(Maker):
     quench_maker: QuenchMaker = field(default_factory=QuenchMaker)
     temperatures: list[float] = field(
         default_factory=lambda: list(range(700, 1201, 25)))
+    temperature_crystal: float | None = None
+    temperature_melt: float | None = None
 
     def __post_init__(self):
+        if self.temperature_crystal is not None:
+            for maker in (self.solid_maker.msd_maker,
+                          self.solid_maker.frenkel_ladd_maker,
+                          self.solid_maker.switch_maker):
+                maker.settings["temperature"] = self.temperature_crystal
+        if self.temperature_melt is not None:
+            for maker in (self.liquid_maker.melt_maker,
+                          self.liquid_maker.leg1_maker,
+                          self.liquid_maker.leg2_maker,
+                          self.liquid_maker.switch_maker):
+                maker.settings["temperature"] = self.temperature_melt
         # the H(T) runs must sit at the same anchors as the TI
         self.crystal_enthalpy_maker.settings["temperature"] = \
             self.solid_maker.msd_maker.settings["temperature"]

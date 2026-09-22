@@ -79,7 +79,7 @@ and every stage maker can be used on its own.
 
 ## Fixed calibration (do not refit)
 
-The Uhlenbeck–Ford excess free energy ladder (`UFCAL` in
+The Uhlenbeck–Ford excess free energy ladder (`UF_LADDER` in
 `utils/helpers.py`) is F_UF/kT versus the dimensionless density
 x = (π^{3/2}/2) σ³ρ, measured once by nonequilibrium switching and valid at
 p ∈ {50, 25}. σ0 is chosen per composition so x lands exactly on the
@@ -93,5 +93,11 @@ src/finite_temp_properties/
 ├── utils/helpers.py    defaults, per-species input blocks, output parsers,
 │                       reference free energies (Einstein, ideal gas, UF ladder)
 ├── schemas/            pydantic documents the analysis jobs return
-└── workflow/core.py    stage makers, chaining jobs, analysis jobs, flow makers
+└── workflow/core.py    stage makers, analysis jobs, flow makers
 ```
+
+Stages that need numbers measured by the previous run (spring constants from
+msd.dat, sigmas from rdf.dat) are chained with the maker's
+``make_from(<previous dir>)``: one job that reads those files when it starts
+and then runs LAMMPS -- jobflow resolves the directory reference at runtime,
+so there is no separate resolver job.
