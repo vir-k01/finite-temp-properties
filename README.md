@@ -65,6 +65,11 @@ py-OATS's structure generator; a `Structure` is used as-is. The lower-level
 `SolidFreeEnergyMaker` and `LiquidFreeEnergyMaker` run either branch alone,
 and every stage maker can be used on its own.
 
+Runnable versions of all of this are in [`examples/`](examples/), in the order
+to try them: `01` writes out every stage's `in.lammps` without running
+anything, `02` is the cheapest real run, `04` is the whole flow, and `06`
+shows how to build a flow the ready-made ones do not give you.
+
 ## Acceptance gates — run them, each has caught a real error
 
 - **Hysteresis** |W_fwd − W_bwd| per switching leg: the statistical error scale.
