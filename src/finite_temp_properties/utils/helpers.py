@@ -188,7 +188,11 @@ def ufm_coeff_block(eps: float, sigmas: list[float], n_species: int,
 
 def quench_leg_block(t_anchor: float, t_floor: float, rate_K_per_ps: float,
                      n_legs: int, time_step_ps: float) -> str:
-    """The NPT cooling legs, each logging its own ht_leg<i>.dat."""
+    """The NPT cooling legs, each logging its own ht_leg<i>.dat.
+
+    No blank line between legs: pymatgen's LammpsInputFile parser reads an
+    empty line inside a substituted block as a command and raises on it.
+    """
     span = (t_anchor - t_floor) / n_legs
     steps = int(round(span / rate_K_per_ps / time_step_ps))
     legs = []
@@ -197,7 +201,7 @@ def quench_leg_block(t_anchor: float, t_floor: float, rate_K_per_ps: float,
         legs.append(
             f"fix q all npt temp {hi:.1f} {lo:.1f} 0.1 iso 0.0 0.0 1.0\n"
             f"fix a{i} all ave/time 10 20 200 v_tt v_hh v_vv file ht_leg{i}.dat\n"
-            f"run {steps}\nunfix q\nunfix a{i}\n")
+            f"run {steps}\nunfix q\nunfix a{i}")
     return "\n".join(legs)
 
 

@@ -4,6 +4,7 @@ construction. No LAMMPS, no network."""
 from __future__ import annotations
 
 import gzip
+import re
 
 import numpy as np
 import pytest
@@ -182,6 +183,44 @@ def test_msd_template_renders_fully(srtio3, tmp_path):
     # nothing template-shaped left except LAMMPS's own runtime variables
     leftovers = {w for w in text.split() if w.startswith("${")}
     assert leftovers <= {"${temperature}", "${vpa}"} - {"${temperature}"}, leftovers
+
+
+def test_every_template_renders(srtio3, tmp_path):
+    """Every stage must produce a parseable in.lammps. A generated block with
+    a blank line in it renders as an empty command and raises -- which is how
+    the quench template was broken without any other test noticing."""
+    from finite_temp_properties.workflow.jobs import (
+        CrystalEnthalpyMaker, CrystalMSDMaker, FrenkelLaddMaker,
+        MeltEquilibrationMaker, PotentialSwitchMaker, QuenchMaker,
+        UFMSwitchLeg1Maker, UFMSwitchLeg2Maker)
+
+    springs = [2.0, 3.0, 1.5]
+    sigmas = [1.6, 1.4, 1.2, 1.3, 1.1, 1.0]
+    stages = [
+        (CrystalMSDMaker(), ()),
+        (FrenkelLaddMaker(), (springs,)),
+        (MeltEquilibrationMaker(), ()),
+        (UFMSwitchLeg1Maker(), (sigmas,)),
+        (UFMSwitchLeg2Maker(), (sigmas, 1.35)),
+        (PotentialSwitchMaker(), ()),
+        (CrystalEnthalpyMaker(), ()),
+        (QuenchMaker(), ()),
+    ]
+    # LAMMPS's own runtime variables, declared inside the inputs -- these are
+    # meant to survive substitution
+    runtime_vars = {"${lam}", "${dU}", "${vpa}"}
+
+    for maker, args in stages:
+        # make() fills the input set from the settings as a side effect
+        maker.make(srtio3, *args)
+        out = tmp_path / maker.name
+        maker.input_set_generator.get_input_set(srtio3).write_input(str(out))
+        text = (out / "in.lammps").read_text()
+        leftover = set(re.findall(r"\$\{\w+\}", text)) - runtime_vars
+        assert not leftover, f"{maker.name}: {leftover}"
+        # a generated block must not open a run of blank lines: pymatgen reads
+        # that as an empty stage and raises (this is what broke the quench)
+        assert "\n\n\n" not in text, f"{maker.name}: empty stage in the input"
 
 
 def test_solid_flow_shape(srtio3):
