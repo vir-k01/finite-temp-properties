@@ -98,12 +98,38 @@ def test_spring_constants_from_msd(tmp_path):
     assert vpa == 12.0
 
 
-def test_sigmas_from_rdf_takes_last_block_and_half_contact(tmp_path):
-    # one pair; g crosses 0.5 at r = 2.0 in the last block -> sigma = 1.0
-    block1 = "1000 3\n1 1.0 0.0 0\n2 2.0 0.0 0\n3 3.0 1.0 0\n"
-    block2 = "2000 3\n1 1.0 0.0 0\n2 2.0 0.9 0\n3 3.0 1.0 0\n"
-    (tmp_path / "rdf.dat").write_text("# h1\n# h2\n# h3\n" + block1 + block2)
-    assert h.sigmas_from_rdf(str(tmp_path), 1) == [1.0]
+def test_contact_sigmas_is_half_the_first_crossing(monkeypatch):
+    """sigma = half the r where g(r) first exceeds 0.5, per pair, in
+    type_pairs order. The RDF itself is py-OATS's; stub it so the test stays
+    a unit test of the sigma rule."""
+    import types
+
+    r = np.linspace(0.0, 8.0, 401)
+
+    class _Result:
+        def __init__(self, first_above):
+            self.r = r
+            self.rdf = np.where(r >= first_above, 1.0, 0.0)
+
+    crossings = {("Sr", "Sr"): 3.2, ("Sr", "O"): 2.0, ("O", "O"): 2.4}
+
+    class _Analyzer:
+        def __init__(self, *a, **k):
+            pass
+
+        def analyze(self):
+            pass
+
+        def get_rdf(self, s1, s2):
+            return _Result(crossings[(s1, s2)])
+
+    module = types.ModuleType("py_oats.analyzers.coordination")
+    module.CoordinationAnalyzer = _Analyzer
+    monkeypatch.setitem(__import__("sys").modules,
+                        "py_oats.analyzers.coordination", module)
+
+    sigmas = h.contact_sigmas(trajectory=None, species=["Sr", "O"])
+    assert sigmas == pytest.approx([1.6, 1.0, 1.2], abs=0.02)
 
 
 def test_binned_quench_drops_startup_spike(tmp_path):

@@ -1,6 +1,12 @@
-# Liquid stage 1: equilibrate the melt at the anchor temperature and measure
-# what the Uhlenbeck-Ford reference needs: the partial RDFs (contact
-# distances -> per-pair sigma) and the equilibrium density.
+# Liquid stage 1: equilibrate the melt at the anchor temperature and record
+# what the Uhlenbeck-Ford reference needs: a trajectory (partial RDFs ->
+# per-pair contact distances) and the equilibrium density.
+#
+# The trajectory rather than LAMMPS's own `compute rdf` because py-OATS
+# already analyses trajectories: CoordinationAnalyzer gives the partial RDFs
+# and TransportAnalyzer the diffusivities, so the same dump both sets the
+# reference and proves the melt is a liquid (an arrested glass would make the
+# whole Gibbs-Helmholtz branch meaningless).
 #
 # sigma_ij is later taken as half the r where g_ij(r) first reaches 0.5,
 # because the UFM repulsion falls to ~kT near r = 2 sigma. It is measured per
@@ -8,7 +14,7 @@
 # melts, and one sigma for all pairs gives a reference the real liquid does
 # not overlap.
 #
-# Outputs: rdf.dat, vol.dat (volume/atom and enthalpy), liq.data.
+# Outputs: melt.dump, vol.dat (volume/atom and enthalpy), liq.data.
 
 units metal
 atom_style atomic
@@ -27,8 +33,9 @@ run ${n_equil}
 
 variable vpa equal vol/atoms
 variable hh equal enthalpy
-compute r all rdf 200 ${rdf_pairs}
-fix rd all ave/time 20 200 8000 c_r[*] file rdf.dat mode vector
 fix av all ave/time 10 100 1000 v_vpa v_hh file vol.dat
+dump d all custom ${dump_interval} melt.dump id element x y z
+dump_modify d sort id element ${species_string}
 run ${n_sample}
+undump d
 write_data liq.data

@@ -73,9 +73,13 @@ and every stage maker can be used on its own.
 - **p-invariance** (liquid): rerun leg 2 at p = 25 instead of 50; F must not move.
 - **Switch volume**: the λ = 1 volume of a potential switch must match an
   independent target-potential NPT of the same phase.
-- **The crystal must survive finite-T MD** (check bond angles, not
-  coordination) and **the melt must actually diffuse** at the anchor —
-  otherwise the H(T) branch is a glass branch and the descent is meaningless.
+- **The melt must actually diffuse** at the anchor, otherwise its H(T) branch
+  is a glass branch and the descent is meaningless. Measured automatically:
+  `LiquidFreeEnergyDoc.diffusivity` holds the per-species D from the melt
+  trajectory.
+- **The crystal must survive finite-T MD** — check bond angles, not
+  coordination numbers, which stay put in an averaged structure that is
+  actually unstable.
 
 ## Fixed calibration (do not refit)
 
@@ -84,6 +88,23 @@ The Uhlenbeck–Ford excess free energy ladder (`UF_LADDER` in
 x = (π^{3/2}/2) σ³ρ, measured once by nonequilibrium switching and valid at
 p ∈ {50, 25}. σ0 is chosen per composition so x lands exactly on the
 calibrated point X_TARGET — no interpolation of the reference enters.
+
+## What comes from py-OATS
+
+Trajectory analysis is not reimplemented here. The melt run writes a dump,
+and py-OATS supplies:
+
+| need | py-OATS |
+|---|---|
+| read a LAMMPS dump | `io.trajectory.TrajectoryData` |
+| partial RDFs → contact sigmas | `analyzers.coordination.CoordinationAnalyzer` |
+| melt diffusivity gate | `analyzers.transport.TransportAnalyzer` |
+| species order = LAMMPS type order | `utils.workflow.helpers._species_string` |
+| amorphous cell from a composition | `structure_generator.get_amorphous_structure` |
+
+What is implemented here is only what is specific to thermodynamic
+integration: the reference free energies, the switching-work integrals, and
+the two G(T) formulas.
 
 ## Layout
 

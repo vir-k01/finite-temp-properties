@@ -107,10 +107,11 @@ class FrenkelLaddMaker(CustomLammpsMaker):
 
 @dataclass
 class MeltEquilibrationMaker(CustomLammpsMaker):
-    """Equilibrate a melt at the anchor and measure partial RDFs + density.
+    """Equilibrate a melt at the anchor and record a trajectory + density.
 
-    Fixes the Uhlenbeck-Ford reference: per-pair sigmas and the volume.
-    Writes rdf.dat, vol.dat, liq.data.
+    Fixes the Uhlenbeck-Ford reference (per-pair contact sigmas, from the
+    trajectory via py-OATS's CoordinationAnalyzer) and supplies the melt
+    diffusivity gate. Writes melt.dump, vol.dat, liq.data.
     """
 
     name: str = "melt_equilibration"
@@ -124,9 +125,7 @@ class MeltEquilibrationMaker(CustomLammpsMaker):
 
     def make(self, structure: Structure, **kwargs):
         self.input_set_generator.update_settings(
-            h.species_settings(structure)
-            | {"rdf_pairs": h.rdf_pairs_setting(structure.n_elems)},
-            validate_params=False)
+            h.species_settings(structure), validate_params=False)
         return super().make(input_structure=structure, **kwargs)
 
 
@@ -166,8 +165,9 @@ class UFMSwitchLeg1Maker(CustomLammpsMaker):
     def make_from(self, melt_dir: str):
         """One job: sigmas from the melt's partial RDFs, then leg 1."""
         structure = h.structure_from(str(melt_dir), "liq.data")
-        self._configure(structure,
-                        h.sigmas_from_rdf(str(melt_dir), structure.n_elems))
+        sigmas = h.sigmas_from_melt(str(melt_dir), h.species_of(structure),
+                                    self.settings["temperature"])
+        self._configure(structure, sigmas)
         return BaseLammpsMaker.make.original(self, input_structure=structure)
 
 
@@ -212,7 +212,8 @@ class UFMSwitchLeg2Maker(CustomLammpsMaker):
     def make_from(self, melt_dir: str, leg1_dir: str):
         """One job: sigma0 from the melt density, start from leg 1's endpoint."""
         structure = h.structure_from(str(leg1_dir), "ufm_endpoint.data")
-        sigmas = h.sigmas_from_rdf(str(melt_dir), structure.n_elems)
+        sigmas = h.sigmas_from_melt(str(melt_dir), h.species_of(structure),
+                                    self.settings["temperature"])
         vol_per_atom, _ = h.volume_and_enthalpy(str(melt_dir))
         self._configure(structure, sigmas, h.sigma_for_target_x(vol_per_atom))
         return BaseLammpsMaker.make.original(self, input_structure=structure)
@@ -336,13 +337,22 @@ def analyze_solid_free_energy(msd_dir: str, fl_dir: str, temperature: float,
 
 @job
 def analyze_liquid_free_energy(melt_dir: str, leg1_dir: str, leg2_dir: str,
-                               temperature: float,
-                               ufm_p: float = 50.0) -> LiquidFreeEnergyDoc:
-    """F(Ta) = F_UF + F_ideal_gas - W_leg2 - W_leg1 from the three melt runs."""
+                               temperature: float, ufm_p: float = 50.0,
+                               time_step: float = 0.001,
+                               dump_interval: int = 100) -> LiquidFreeEnergyDoc:
+    """F(Ta) = F_UF + F_ideal_gas - W_leg2 - W_leg1 from the three melt runs.
+
+    The melt trajectory also supplies the diffusivity gate: if the melt is not
+    diffusing at the anchor, its H(T) branch is a glass branch and the
+    Gibbs-Helmholtz descent below is meaningless.
+    """
     structure = h.structure_from(melt_dir, "liq.data")
     species = h.species_of(structure)
     vol_per_atom, enthalpy_cell = h.volume_and_enthalpy(melt_dir)
-    sigmas = h.sigmas_from_rdf(melt_dir, len(species))
+    trajectory = h.read_trajectory(melt_dir, "melt.dump", temperature,
+                                   time_step, dump_interval)
+    sigmas = h.contact_sigmas(trajectory, species)
+    diffusivity = h.diffusivities(trajectory)
     w1, hyst1 = h.forward_backward_work(leg1_dir)
     w2, hyst2 = h.forward_backward_work(leg2_dir)
     counts = h.atom_counts(melt_dir, "liq.data", len(species))
@@ -353,6 +363,7 @@ def analyze_liquid_free_energy(melt_dir: str, leg1_dir: str, leg2_dir: str,
         free_energy=reference - w2 - w1, reference_free_energy=reference,
         work_leg1=w1, work_leg2=w2, hysteresis=hyst1 + hyst2, ufm_p=ufm_p,
         sigmas=sigmas, sigma_single=h.sigma_for_target_x(vol_per_atom),
+        diffusivity=diffusivity,
         enthalpy_per_atom=enthalpy_cell / sum(counts),
         volume_per_atom=vol_per_atom, natoms=sum(counts),
         melt_dir=str(melt_dir), leg1_dir=str(leg1_dir), leg2_dir=str(leg2_dir))
@@ -497,7 +508,9 @@ class LiquidFreeEnergyMaker(Maker):
         doc = analyze_liquid_free_energy(
             melt.output.dir_name, leg1.output.dir_name, leg2.output.dir_name,
             temperature=self.melt_maker.settings["temperature"],
-            ufm_p=self.leg2_maker.settings["ufm_p"])
+            ufm_p=self.leg2_maker.settings["ufm_p"],
+            time_step=self.melt_maker.settings["time_step"],
+            dump_interval=self.melt_maker.settings["dump_interval"])
         jobs = [melt, leg1, leg2, doc]
         switch_doc = None
         if self.with_switch:

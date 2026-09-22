@@ -77,6 +77,7 @@ MELT_EQUILIBRATION_DEFAULTS = _COMMON | {
     "temperature": 2900.0,
     "n_equil": 20000,
     "n_sample": 40000,
+    "dump_interval": 100,   # melt.dump -> partial RDFs and the diffusivity gate
 }
 
 UFM_SWITCH_DEFAULTS = _COMMON | {
@@ -126,12 +127,15 @@ QUENCH_DEFAULTS = _COMMON | {
 def species_of(structure: Structure) -> list[str]:
     """Element symbols in the order LammpsData assigns atom types.
 
+    Delegates to py-OATS so there is ONE definition of this ordering rule:
     pymatgen numbers types by sorted(Element), i.e. Pauling electronegativity
-    -- NOT alphabetically, NOT first appearance. Everything per-species
-    (pair_coeff, groups, springs, masses) must follow this order or elements
-    get silently swapped.
+    -- not alphabetically, not first appearance. Everything per-species
+    (pair_coeff, groups, springs, masses) must follow it or elements get
+    silently swapped.
     """
-    return [el.symbol for el in sorted(structure.composition.elements)]
+    from py_oats.utils.workflow.helpers import _species_string
+
+    return _species_string(structure).split()
 
 
 def species_settings(structure: Structure) -> dict:
@@ -172,11 +176,6 @@ def spring_blocks(spring_constants: list[float], n_switch: int,
         "spring_energy_sum": "+".join(f"f_ti{i}" for i in ids),
         "n_total": 2 * n_equil + 2 * n_switch,
     }
-
-
-def rdf_pairs_setting(n_species: int) -> str:
-    """The pair list for `compute rdf`, all i <= j."""
-    return " ".join(f"{i} {j}" for i, j in type_pairs(n_species))
 
 
 def ufm_coeff_block(eps: float, sigmas: list[float], n_species: int,
@@ -270,35 +269,78 @@ def spring_constants_from_msd(run_dir: str, temperature: float,
     return k, float(m[:, 1 + n_species].mean())
 
 
-def sigmas_from_rdf(run_dir: str, n_species: int) -> list[float]:
+def read_trajectory(run_dir: str, filename: str, temperature: float,
+                    time_step_ps: float, dump_interval: int):
+    """A py-OATS TrajectoryData from a LAMMPS dump this package wrote.
+
+    py-OATS takes the time step in FEMTOSECONDS while LAMMPS metal units are
+    picoseconds, hence the x1000.
+    """
+    from py_oats.io.trajectory import TrajectoryData
+
+    for path in (f"{run_dir}/{filename}", f"{run_dir}/{filename}.gz"):
+        if os.path.exists(path):
+            return TrajectoryData.read(path, temperature=temperature,
+                                       time_step=time_step_ps * 1000.0,
+                                       step_skip=dump_interval)
+    raise FileNotFoundError(f"{filename} not in {run_dir}")
+
+
+def contact_sigmas(trajectory, species: list[str], rmax: float = 8.0,
+                   ngrid: int = 401, smoothing: float = 0.05) -> list[float]:
     """sigma_ij = half the r where the partial RDF first reaches 0.5.
 
     The UFM repulsion falls to ~kT near r = 2 sigma, so this is half an
-    effective contact diameter -- measured per pair. rdf.dat is written by
-    `fix ave/time ... mode vector`: one block per window, each headed by a
-    two-field line; use the LAST (best-equilibrated) block.
+    effective contact diameter -- measured per pair, because cation-cation
+    and cation-anion contacts differ by up to 2x in an oxide melt.
+
+    The RDFs come from py-OATS's CoordinationAnalyzer; pairs are returned in
+    ``type_pairs`` order, which is the order LAMMPS pair_coeff lines expect.
+
+    These sigmas set only the INTERMEDIATE state of the two-leg path, so they
+    affect how well the reference overlaps the real liquid (hysteresis), not
+    the free energy itself -- leg 2 carries the intermediate to the analytic
+    single-sigma fluid and it cancels.
     """
-    blocks, current = [], []
-    for line in _read(f"{run_dir}/rdf.dat").splitlines():
-        if line.startswith("#"):
-            continue
-        fields = line.split()
-        if len(fields) == 2:
-            if current:
-                blocks.append(current)
-            current = []
-        elif fields:
-            current.append([float(v) for v in fields])
-    if current:
-        blocks.append(current)
-    data = np.array(blocks[-1])
-    r = data[:, 1]
+    from py_oats.analyzers.coordination import CoordinationAnalyzer
+
+    analyzer = CoordinationAnalyzer(trajectory, rmax=rmax, ngrid=ngrid,
+                                    sigma=smoothing)
+    analyzer.analyze()
     sigmas = []
-    for k in range(len(type_pairs(n_species))):
-        g = data[:, 2 + 2 * k]
-        i = int(np.argmax(g > 0.5))
-        sigmas.append(0.5 * r[i] if g[i] > 0.5 else 0.5 * r[0])
+    for i, j in type_pairs(len(species)):
+        result = analyzer.get_rdf(species[i - 1], species[j - 1])
+        crossed = np.flatnonzero(result.rdf > 0.5)
+        sigmas.append(0.5 * float(result.r[crossed[0]]) if len(crossed)
+                      else 0.5 * float(result.r[0]))
     return sigmas
+
+
+def sigmas_from_melt(melt_dir: str, species: list[str],
+                     temperature: float) -> list[float]:
+    """Contact sigmas from a melt run's trajectory.
+
+    g(r) is a static quantity, so the trajectory's time metadata does not
+    enter; nominal values are passed for it. Use ``read_trajectory`` directly
+    with the real time step when the diffusivities are wanted too.
+    """
+    trajectory = read_trajectory(melt_dir, "melt.dump", temperature,
+                                 time_step_ps=0.001, dump_interval=1)
+    return contact_sigmas(trajectory, species)
+
+
+def diffusivities(trajectory) -> dict[str, float]:
+    """Per-species self-diffusivity (cm^2/s) from py-OATS's TransportAnalyzer.
+
+    The gate on the melt: enthalpy cannot tell a liquid from an arrested
+    glass (both have Cp ~ 3R), so a non-diffusive "melt" would silently turn
+    the Gibbs-Helmholtz branch into a glass branch.
+    """
+    from py_oats.analyzers.transport import TransportAnalyzer
+
+    analyzer = TransportAnalyzer(trajectory)
+    analyzer.analyze()
+    return {s: float(analyzer.get_diffusivity(s)) for s in analyzer.species}
 
 
 def volume_and_enthalpy(run_dir: str) -> tuple[float, float]:

@@ -36,6 +36,10 @@ class LiquidFreeEnergyDoc(BaseModel):
     ufm_p: float = Field(description="UF coupling p (eps = p kB T)")
     sigmas: list[float] = Field(description="per-pair sigma from the partial RDFs, A")
     sigma_single: float = Field(description="single-fluid sigma placing x on X_TARGET, A")
+    diffusivity: Optional[dict[str, float]] = Field(
+        None, description="per-species self-diffusivity at the anchor (cm^2/s). "
+                          "The gate on the melt: a non-diffusing 'melt' makes "
+                          "the Gibbs-Helmholtz branch a glass branch.")
     enthalpy_per_atom: float = Field(description="H(Ta) of the reference melt, eV/atom")
     volume_per_atom: float
     natoms: int
