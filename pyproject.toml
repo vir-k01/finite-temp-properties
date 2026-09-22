@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "finite_temp_properties"
+version = "0.1.0"
+description = "Finite-temperature free energies from thermodynamic integration with MLIPs, via LAMMPS and jobflow."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  {name = "Vir Karan", email = "virkaran@berkeley.edu"},
+]
+dependencies = [
+  "numpy",
+  "ase",
+  "pymatgen",
+  "jobflow",
+  "atomate2>=0.1.5",
+  "calphy",
+  "py_oats @ git+https://github.com/vir-k01/py-OATS.git",
+]
+
+[tool.setuptools.package-data]
+finite_temp_properties = ["templates/*.in"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/finite_temp_properties/tests"]

@@ -1,0 +1,43 @@
+# Crystal stage 2: Frenkel-Ladd switch between the real potential and an
+# Einstein crystal, one spring constant per species.
+#
+# fix ti/spring mixes the forces itself, f = (1-lambda) f_pair + lambda (-k dx),
+# so lambda = 0 is the full potential and lambda = 1 the Einstein crystal. One
+# run covers the forward AND backward sweeps, which gives the hysteresis
+# estimate for free.
+#
+# ORDER MATTERS: every ti/spring fix must come BEFORE the Langevin thermostat,
+# or the thermostat force is scaled by (1-lambda) and the lambda = 1 endpoint
+# is not the canonical Einstein crystal. That error costs ~185 meV/atom and is
+# invisible except through the k-invariance test.
+#
+# Outputs: ti.dat (lambda, dU/dlambda; forward sweep then backward).
+
+units metal
+atom_style atomic
+boundary p p p
+read_data input.data
+
+pair_style ${pair_style}
+pair_coeff * * ${potential_path} ${species_string}
+
+timestep ${time_step}
+thermo ${thermo_interval}
+
+${spring_groups}
+
+velocity all create ${temperature} ${seed} mom yes rot yes
+fix nv all nvt temp ${temperature} ${temperature} 0.1
+run ${n_equil}
+unfix nv
+
+compute pe all pe/atom pair
+compute pesum all reduce sum c_pe
+fix nve all nve
+${spring_fixes}
+fix lan all langevin ${temperature} ${temperature} 0.1 39847 zero yes
+
+variable lam equal f_ti1[1]
+variable dU equal ((${spring_energy_sum})-c_pesum)/atoms
+fix out all print 100 "${lam} ${dU}" file ti.dat screen no title "lambda dU"
+run ${n_total}

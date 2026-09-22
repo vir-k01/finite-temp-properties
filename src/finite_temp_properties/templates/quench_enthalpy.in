@@ -1,0 +1,37 @@
+# Liquid H(T) along an NPT quench under the target potential.
+#
+# Supplies the Gibbs-Helmholtz integrand from the melt anchor Ta down past
+# the report window:  G_am(T) = T [ G(Ta)/Ta + int_T^Ta H(T')/T'^2 dT' ].
+# Isobaric enthalpies are REQUIRED here -- the Gibbs-Helmholtz relation holds
+# at fixed pressure -- which is why every leg is a zero-pressure barostat.
+#
+# The quench legs are generated from (anchor, floor, rate) by the maker; each
+# writes its own ht_leg<i>.dat so a bad leg is diagnosable and re-runnable.
+#
+# Outputs: ht_equil.dat, ht_leg*.dat, final.data.
+
+units metal
+atom_style atomic
+boundary p p p
+read_data input.data
+
+pair_style ${pair_style}
+pair_coeff * * ${potential_path} ${species_string}
+
+timestep ${time_step}
+thermo ${thermo_interval}
+thermo_style custom step temp pe press vol enthalpy
+thermo_modify flush yes
+variable tt equal temp
+variable hh equal enthalpy
+variable vv equal vol
+
+velocity all create ${temperature} ${seed} mom yes rot yes
+fix eq all npt temp ${temperature} ${temperature} 0.1 iso 0.0 0.0 1.0
+fix ave all ave/time 10 20 200 v_tt v_hh v_vv file ht_equil.dat
+run ${n_equil}
+unfix eq
+unfix ave
+
+${quench_legs}
+write_data final.data

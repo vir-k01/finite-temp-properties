@@ -1,0 +1,41 @@
+# Crystal H(T0) under the target potential -> ht.dat.
+#
+# Supplies the enthalpy that, with G0 = F_TI + dG_switch, defines the entropy
+# anchor S(T0) = (H(T0) - G0)/T0 for the harmonic carry
+# G(T) = H(T0) + 3R(T-T0) - T[S(T0) + 3R ln(T/T0)].
+#
+# The `tri` barostat lets a low-symmetry cell change SHAPE, not just volume;
+# forcing it orthogonal leaves residual shear stress that stiffens exactly
+# the phonons this run measures. The short NVT leg equilibrates the velocity
+# distribution BEFORE the barostat sees the cell.
+#
+# Outputs: ht.dat (measured T, enthalpy, volume), final.data.
+
+units metal
+atom_style atomic
+boundary p p p
+read_data input.data
+${maybe_triclinic}
+
+pair_style ${pair_style}
+pair_coeff * * ${potential_path} ${species_string}
+
+timestep ${time_step}
+thermo ${thermo_interval}
+thermo_style custom step temp pe press vol enthalpy
+thermo_modify flush yes
+variable tt equal temp
+variable hh equal enthalpy
+variable vv equal vol
+
+velocity all create ${temperature} ${seed} mom yes rot yes
+fix th all nvt temp ${temperature} ${temperature} 0.1
+run 2000
+unfix th
+
+fix p all npt temp ${temperature} ${temperature} 0.1 ${barostat} 0.0 0.0 2.0
+fix av all ave/time 10 50 500 v_tt v_hh v_vv file ht.dat
+run ${n_run}
+unfix av
+unfix p
+write_data final.data

@@ -1,0 +1,34 @@
+# Liquid stage 1: equilibrate the melt at the anchor temperature and measure
+# what the Uhlenbeck-Ford reference needs: the partial RDFs (contact
+# distances -> per-pair sigma) and the equilibrium density.
+#
+# sigma_ij is later taken as half the r where g_ij(r) first reaches 0.5,
+# because the UFM repulsion falls to ~kT near r = 2 sigma. It is measured per
+# pair: cation-cation and cation-anion contacts differ by up to 2x in oxide
+# melts, and one sigma for all pairs gives a reference the real liquid does
+# not overlap.
+#
+# Outputs: rdf.dat, vol.dat (volume/atom and enthalpy), liq.data.
+
+units metal
+atom_style atomic
+boundary p p p
+read_data input.data
+
+pair_style ${pair_style}
+pair_coeff * * ${potential_path} ${species_string}
+
+timestep ${time_step}
+thermo ${thermo_interval}
+
+velocity all create ${temperature} ${seed} mom yes rot yes
+fix eq all npt temp ${temperature} ${temperature} 0.1 iso 0.0 0.0 1.0
+run ${n_equil}
+
+variable vpa equal vol/atoms
+variable hh equal enthalpy
+compute r all rdf 200 ${rdf_pairs}
+fix rd all ave/time 20 200 8000 c_r[*] file rdf.dat mode vector
+fix av all ave/time 10 100 1000 v_vpa v_hh file vol.dat
+run ${n_sample}
+write_data liq.data

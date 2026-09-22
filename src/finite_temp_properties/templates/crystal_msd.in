@@ -1,0 +1,32 @@
+# Crystal stage 1: equilibrate at temperature, then measure the per-species
+# mean-square displacement. This fixes the Einstein reference for the
+# Frenkel-Ladd switch: k_i = 3 kB T / <dr^2>_i. One MSD for the whole cell is
+# not enough -- anion sublattices are far softer than cation ones, and a badly
+# matched spring inflates the switching hysteresis.
+#
+# Outputs: msd.dat (per-species <dr^2> and volume/atom), equil.data.
+
+units metal
+atom_style atomic
+boundary p p p
+read_data input.data
+
+pair_style ${pair_style}
+pair_coeff * * ${potential_path} ${species_string}
+
+timestep ${time_step}
+thermo ${thermo_interval}
+
+${msd_groups}
+
+velocity all create ${temperature} ${seed} mom yes rot yes
+fix eq all npt temp ${temperature} ${temperature} 0.1 iso 0.0 0.0 1.0
+run ${n_equil}
+unfix eq
+
+fix nv all nvt temp ${temperature} ${temperature} 0.1
+${msd_computes}
+variable vpa equal vol/atoms
+fix av all ave/time 10 100 1000 ${msd_columns} v_vpa file msd.dat
+run ${n_msd}
+write_data equil.data

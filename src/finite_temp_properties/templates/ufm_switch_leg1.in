@@ -1,0 +1,53 @@
+# Liquid stage 2 (leg 1): switch the real liquid to a MULTI-SIGMA
+# Uhlenbeck-Ford fluid that actually resembles it.
+#
+# The analytic UF free energy exists only for a single-component fluid, and a
+# single sigma forced onto an oxide melt gives a reference the liquid does not
+# overlap (F then drifts with p and sigma when it must be invariant). So leg 1
+# targets a per-pair-sigma UFM, and leg 2 carries that to the single-sigma
+# fluid whose free energy is known.
+#
+# Two probed facts this template relies on: `compute pair <substyle>` returns
+# the RAW substyle energy (not the scaled one), so the integrand is simply
+# (U_ufm - U_real)/N; and hybrid/scaled lives in the LAMMPS core, so it is
+# present in builds whose package list does not mention it.
+#
+# Runs NVT (Langevin on NVE): the volume is the melt-stage NPT volume, frozen
+# into the input cell.
+#
+# Outputs: fwd.dat, bwd.dat (lambda, dU/dlambda), ufm_endpoint.data.
+
+units metal
+atom_style atomic
+boundary p p p
+read_data input.data
+
+variable lam equal 0.0
+variable fscale equal 1.0-v_lam
+variable bscale equal v_lam
+pair_style hybrid/scaled v_fscale ${pair_style} v_bscale ufm ${ufm_cutoff}
+pair_coeff * * ${pair_style} ${potential_path} ${species_string}
+${ufm_pair_coeffs}
+
+timestep ${time_step}
+thermo ${thermo_interval}
+
+compute c1 all pair ${pair_style}
+compute c2 all pair ufm
+variable dU equal (c_c2-c_c1)/atoms
+fix nve all nve
+fix lan all langevin ${temperature} ${temperature} 0.1 ${seed} zero yes
+run ${n_equil}
+
+variable lam equal ramp(0,1)
+fix fwd all print 50 "${lam} ${dU}" file fwd.dat screen no title "lambda dU"
+run ${n_switch}
+unfix fwd
+
+variable lam equal 1.0
+run ${n_equil}
+write_data ufm_endpoint.data
+
+variable lam equal ramp(1,0)
+fix bwd all print 50 "${lam} ${dU}" file bwd.dat screen no title "lambda dU"
+run ${n_switch}

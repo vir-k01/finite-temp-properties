@@ -1,0 +1,47 @@
+# Liquid stage 3 (leg 2): switch the multi-sigma UFM to the SINGLE-SIGMA
+# Uhlenbeck-Ford fluid whose excess free energy is calibrated.
+#
+# sigma0 is chosen per composition so the dimensionless density
+# x = (pi^(3/2)/2) sigma0^3 rho lands exactly on a calibrated ladder point,
+# so no interpolation of the reference enters. The liquid free energy is then
+#
+#     F_real = F_UF(sigma0) + F_ideal_gas - W_leg2 - W_leg1
+#
+# Rerunning this leg at a different coupling p is the p-invariance acceptance
+# test: F_real cannot depend on p.
+#
+# Outputs: fwd.dat, bwd.dat.
+
+units metal
+atom_style atomic
+boundary p p p
+read_data input.data
+
+variable lam equal 0.0
+variable fscale equal 1.0-v_lam
+variable bscale equal v_lam
+pair_style hybrid/scaled v_fscale ufm ${ufm_cutoff_multi} v_bscale ufm ${ufm_cutoff_single}
+${ufm_pair_coeffs_multi}
+${ufm_pair_coeffs_single}
+
+timestep ${time_step}
+thermo ${thermo_interval}
+
+compute c1 all pair ufm 1
+compute c2 all pair ufm 2
+variable dU equal (c_c2-c_c1)/atoms
+fix nve all nve
+fix lan all langevin ${temperature} ${temperature} 0.1 ${seed} zero yes
+run ${n_equil}
+
+variable lam equal ramp(0,1)
+fix fwd all print 50 "${lam} ${dU}" file fwd.dat screen no title "lambda dU"
+run ${n_switch}
+unfix fwd
+
+variable lam equal 1.0
+run ${n_equil}
+
+variable lam equal ramp(1,0)
+fix bwd all print 50 "${lam} ${dU}" file bwd.dat screen no title "lambda dU"
+run ${n_switch}

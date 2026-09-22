@@ -1,0 +1,66 @@
+# Transport a free energy from the reference potential to the target
+# potential by one nonequilibrium switch:
+#
+#     G_target(T) = F_reference_TI(T) + dG(reference -> target)
+#
+# This exists because TI itself may be impossible under the target engine
+# (the GRACE TF build carries neither `pair_style ufm` nor `fix ti/spring`,
+# and its chunk styles segfault inside hybrid/scaled -- plain `grace` does
+# not).
+#
+# The switch runs in NPT ON PURPOSE: two potentials do not share an
+# equilibrium density, and in NPT dG/dlambda = <U_target - U_reference> at
+# fixed P with the box relaxing along the path. An NVT switch would need a
+# separate -int P dV leg.
+#
+# Acceptance: forward/backward hysteresis, AND the lambda = 1 volume
+# (vol_target.dat) must match an independent NPT equilibration of the same
+# phase under the target potential.
+#
+# Outputs: fwd.dat, bwd.dat, vol_reference.dat, vol_target.dat, end_target.data.
+
+units metal
+atom_style atomic
+boundary p p p
+read_data input.data
+${maybe_triclinic}
+
+variable lam equal 0.0
+variable fscale equal 1.0-v_lam
+variable bscale equal v_lam
+pair_style hybrid/scaled v_fscale ${reference_pair_style} v_bscale ${target_pair_style}
+pair_coeff * * ${reference_pair_style} ${reference_potential_path} ${species_string}
+pair_coeff * * ${target_pair_style} ${target_potential_path} ${species_string}
+
+timestep ${time_step}
+thermo ${thermo_interval}
+thermo_style custom step temp pe press vol
+thermo_modify flush yes
+
+compute c1 all pair ${reference_pair_style}
+compute c2 all pair ${target_pair_style}
+variable dU equal (c_c2-c_c1)/atoms
+variable vpa equal vol/atoms
+
+velocity all create ${temperature} ${seed} mom yes rot yes
+fix p all npt temp ${temperature} ${temperature} 0.1 ${barostat} 0.0 0.0 2.0
+
+# lambda = 0 is the pure reference: equilibrate there and record its volume.
+fix vr all ave/time 10 100 1000 v_vpa file vol_reference.dat
+run ${n_equil}
+unfix vr
+
+variable lam equal ramp(0,1)
+fix fwd all print 50 "${lam} ${dU}" file fwd.dat screen no title "lambda dU"
+run ${n_switch}
+unfix fwd
+
+variable lam equal 1.0
+fix vt all ave/time 10 100 1000 v_vpa file vol_target.dat
+run ${n_equil}
+unfix vt
+write_data end_target.data
+
+variable lam equal ramp(1,0)
+fix bwd all print 50 "${lam} ${dU}" file bwd.dat screen no title "lambda dU"
+run ${n_switch}
