@@ -161,8 +161,20 @@ class UFMSwitchLeg1Maker(CustomLammpsMaker):
 
     @lammps_job
     def make_from(self, melt_dir: str):
-        """One job: sigmas from the melt's partial RDFs, then leg 1."""
+        """One job: sigmas from the melt's partial RDFs, then leg 1.
+
+        The cell is rescaled to the melt's MEAN NPT volume before switching.
+        liq.data holds the box at the last NPT step, which for ~100 atoms at
+        the anchor is several percent off the mean -- and the UF reference is
+        evaluated at the mean density, where it moves ~1 eV/atom per unit
+        ln(rho). Switching in the snapshot box put F_liquid off by ~7
+        meV/atom per percent of mismatch (up to 8% seen). The 20 ps lambda=0
+        equilibration in the template relaxes the rescaled cell, and leg 2
+        inherits this box through ufm_endpoint.data.
+        """
         structure = h.structure_from(str(melt_dir), "liq.data")
+        vol_per_atom, _ = h.volume_and_enthalpy(str(melt_dir))
+        structure.scale_lattice(vol_per_atom * len(structure))
         sigmas = h.sigmas_from_melt(str(melt_dir), h.species_of(structure),
                                     self.settings["temperature"])
         self._configure(structure, sigmas)

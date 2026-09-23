@@ -232,6 +232,31 @@ def test_solid_flow_shape(srtio3):
                      "analyze_potential_switch"]
 
 
+def test_leg1_runs_at_the_mean_melt_volume(srtio3, tmp_path, monkeypatch):
+    """The UF reference is evaluated at the mean NPT density, so leg 1 must
+    switch at that density too -- not in the last-step box liq.data holds,
+    which was 3-8% off and cost ~7 meV/atom per percent."""
+    import types
+
+    from pymatgen.io.lammps.data import LammpsData
+
+    from finite_temp_properties.workflow.jobs import makers
+    LammpsData.from_structure(srtio3, atom_style="atomic").write_file(
+        str(tmp_path / "liq.data"))
+    snapshot = srtio3.volume / len(srtio3)
+    mean = 1.05 * snapshot
+    (tmp_path / "vol.dat").write_text(
+        "# a\n# b\n" + "\n".join(f"{i} {mean} -100.0" for i in range(10)))
+    monkeypatch.setattr(h, "sigmas_from_melt", lambda *a, **k: [1.0] * 6)
+    seen = {}
+    fake = types.SimpleNamespace(original=lambda self, input_structure: (
+        seen.setdefault("v", input_structure.volume / len(input_structure))))
+    monkeypatch.setattr(makers.BaseLammpsMaker, "make", fake)
+    maker = makers.UFMSwitchLeg1Maker()
+    maker.make_from.original(maker, str(tmp_path))
+    assert seen["v"] == pytest.approx(mean, rel=1e-9)
+
+
 def test_liquid_flow_shape(srtio3):
     from finite_temp_properties.workflow.flows import LiquidFreeEnergyMaker
     flow = LiquidFreeEnergyMaker(with_switch=False).make(srtio3)
