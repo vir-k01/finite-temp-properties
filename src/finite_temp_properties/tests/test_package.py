@@ -133,6 +133,17 @@ def test_contact_sigmas_is_half_the_first_crossing(monkeypatch):
     assert sigmas == pytest.approx([1.6, 1.0, 1.2], abs=0.02)
 
 
+def test_dilute_pair_never_gets_zero_sigma():
+    """Two Ca atoms in a Ca-Nb-O melt never meet within rmax: the Ca-Ca pair
+    must borrow the largest sigma on Ca (Ca-Nb), not collapse to 0."""
+    pairs = h.type_pairs(3)                       # Ca, Nb, O
+    measured = [None, 1.57, 1.02, 1.49, 0.82, 1.17]
+    assert h.fill_missing_sigmas(pairs, measured) == pytest.approx(
+        [1.57, 1.57, 1.02, 1.49, 0.82, 1.17])
+    with pytest.raises(ValueError):
+        h.fill_missing_sigmas(pairs, [None] * 6)
+
+
 def test_binned_quench_drops_startup_spike(tmp_path):
     T = np.linspace(600, 2900, 500)
     H = -8.0 + 1e-3 * (T - 600)

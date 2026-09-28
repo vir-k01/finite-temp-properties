@@ -311,13 +311,38 @@ def contact_sigmas(trajectory, species: list[str], rmax: float = 8.0,
     analyzer = CoordinationAnalyzer(trajectory, rmax=rmax, ngrid=ngrid,
                                     sigma=smoothing)
     analyzer.analyze()
+    pairs = type_pairs(len(species))
     sigmas = []
-    for i, j in type_pairs(len(species)):
+    for i, j in pairs:
         result = analyzer.get_rdf(species[i - 1], species[j - 1])
         crossed = np.flatnonzero(result.rdf > 0.5)
-        sigmas.append(0.5 * float(result.r[crossed[0]]) if len(crossed)
-                      else 0.5 * float(result.r[0]))
-    return sigmas
+        sigmas.append(0.5 * float(result.r[crossed[0]]) if len(crossed) else None)
+    return fill_missing_sigmas(pairs, sigmas)
+
+
+def fill_missing_sigmas(pairs, sigmas):
+    """A pair with no measurable contact gets the largest sigma measured for
+    either of its species.
+
+    This happens for a dilute species: two Ca atoms in a 130-atom Ca-Nb-O
+    melt never came within 8 A, so the Ca-Ca g(r) never reached 0.5. The old
+    fallback, half the first grid point, was sigma = 0 -- a UF pair with zero
+    range, which gave a NaN pressure at step 0 and blew the run up. Any
+    positive sigma is valid (sigma shapes only the intermediate state, see
+    ``contact_sigmas``); the largest one on that species, usually its
+    cation-cation cross contact, is the closest physical stand-in.
+    """
+    known = [s for s in sigmas if s]
+    if not known:
+        raise ValueError("no pair has a measurable contact distance")
+    out = []
+    for (i, j), s in zip(pairs, sigmas):
+        if not s:
+            near = [t for (a, b), t in zip(pairs, sigmas)
+                    if t and ({a, b} & {i, j})]
+            s = max(near) if near else max(known)
+        out.append(float(s))
+    return out
 
 
 def sigmas_from_melt(melt_dir: str, species: list[str],
