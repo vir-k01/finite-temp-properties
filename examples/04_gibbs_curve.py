@@ -43,6 +43,9 @@ maker = GibbsCurveMaker(
     temperature_crystal=T0,
     temperature_melt=TA,
     temperatures=list(range(700, 1201, 25)),   # the grid G(T) is reported on
+    # crystal H(T) sweep: None = a ladder <= 100 K apart over the grid and T0
+    # (here 700, 800, 900, 950, 1000, 1100, 1200 K); [] = legacy 3R carry
+    crystal_temperatures=None,
 )
 configure_gibbs(maker)
 
@@ -57,12 +60,16 @@ print(f"""
 anchors
   crystal  T0 = {curve.t_crystal_anchor:.0f} K   G = {curve.g_crystal_anchor:.6f} eV/atom
            H(T0) = {curve.h_crystal_anchor:.6f}   S = {curve.s_crystal_anchor:.2f} J/mol-atom/K
+           G(T) by {curve.crystal_method}; Cp/3R along the sweep: {' '.join(f'{c:.2f}' for c in (curve.crystal_cp_over_3R or []))}
   melt     Ta = {curve.t_melt_anchor:.0f} K   G = {curve.g_melt_anchor:.6f} eV/atom
            S = {curve.s_melt_anchor:.2f} J/mol-atom/K
 
 dG(amorphous - crystal), meV/atom""")
 for t, gc, ga in zip(curve.temperatures, curve.g_crystal, curve.g_amorphous):
     print(f"  {t:7.0f}  {1000 * (ga - gc):8.2f}")
+
+for w in curve.crystal_warnings:
+    print(f"\nCRYSTAL: {w}")
 
 print(f"\nwritten to {out_file}")
 

@@ -12,7 +12,12 @@ For one composition:
 
 - **Crystal:** F(T0) by a Frenkel–Ladd switch to an Einstein crystal whose
   per-species spring constants are measured (k_i = 3 kB T / ⟨dr²⟩_i), then
-  G(T) by a classical-harmonic carry (Cp = 3R).
+  G(T) by Gibbs–Helmholtz from that anchor through an NPT H(T) sweep (one run
+  per ladder temperature, ≤100 K apart), so Cp(T) comes from the MD. The
+  sweep is screened for latent-heat jumps or a cell shrinking on heating;
+  above such a jump G is the metastable parent and the interval is reported.
+  `crystal_temperatures=[]` falls back to the old Cp = 3R carry from H(T0),
+  which freezes formation enthalpies and entropies at T0.
 - **Liquid:** F(Ta) by a two-leg switch — real melt → multi-sigma
   Uhlenbeck–Ford fluid (sigmas measured from partial RDFs) → single-sigma UF
   fluid with a calibrated free energy — then G(T) by a Gibbs–Helmholtz

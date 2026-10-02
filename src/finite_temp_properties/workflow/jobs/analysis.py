@@ -96,14 +96,17 @@ def build_gibbs_curve(
     temperatures: list[float],
     solid: SolidFreeEnergyDoc | None = None,
     solid_switch: PotentialSwitchDoc | None = None,
-    crystal_ht_dir: str | None = None,
+    crystal_ht_dirs: list[str] | str | None = None,
     liquid: LiquidFreeEnergyDoc | None = None,
     liquid_switch: PotentialSwitchDoc | None = None,
     quench_dir: str | None = None,
 ) -> GibbsCurveDoc:
     """Assemble G(T) from the TI anchors and the target-potential H(T) MD.
 
-    crystal:  G0 = F_TI + dG_switch, S(T0) = (H(T0) - G0)/T0, harmonic carry.
+    crystal:  G0 = F_TI + dG_switch. With an NPT H(T) sweep (several
+    crystal_ht_dirs), Gibbs-Helmholtz from G0 through the measured H(T),
+    screened for transitions (h.crystal_enthalpy_sweep). With ONE directory,
+    the legacy Cp = 3R carry from S(T0) = (H(T0) - G0)/T0.
     amorphous: Ga = F_TI + dG_switch, Gibbs-Helmholtz descent over the
     binned quench H(T). Either branch may be omitted.
     """
@@ -113,17 +116,38 @@ def build_gibbs_curve(
     doc = GibbsCurveDoc(temperatures=list(ts), solid=solid, liquid=liquid,
                         solid_switch=solid_switch, liquid_switch=liquid_switch)
 
-    if solid is not None and crystal_ht_dir is not None:
-        structure = h.structure_from(crystal_ht_dir, "final.data")
-        t_measured, h_measured = h.mean_ht(crystal_ht_dir, len(structure))
+    if isinstance(crystal_ht_dirs, str):
+        crystal_ht_dirs = [crystal_ht_dirs]
+    if solid is not None and crystal_ht_dirs:
         t0 = solid.temperature
-        # ht.dat reports the MEASURED mean T, a few K off the setpoint; carry
-        # H the short distance to T0 so F and H refer to the same temperature.
-        h0 = h_measured + h.THREE_R * (t0 - t_measured)
         g0 = solid.free_energy + (solid_switch.dG if solid_switch else 0.0)
+        points = []
+        for d in crystal_ht_dirs:
+            nat = len(h.structure_from(d, "final.data"))
+            points.append(h.mean_htv(d, nat))
+        if len(points) == 1:
+            t_measured, h_measured, _ = points[0]
+            # ht.dat reports the MEASURED mean T, a few K off the setpoint; carry
+            # H the short distance to T0 so F and H refer to the same temperature.
+            h0 = h_measured + h.THREE_R * (t0 - t_measured)
+            doc.crystal_method = "harmonic_3R"
+            doc.crystal_warnings.append(
+                "single-temperature H: G(T) by the Cp = 3R carry, formation "
+                "enthalpies and entropies frozen at T0")
+            doc.g_crystal = list(h.crystal_gibbs_curve(ts, t0, h0, g0))
+        else:
+            sweep = h.crystal_enthalpy_sweep(points, t0)
+            h0 = float(np.interp(t0, sweep["T"], sweep["H"]))
+            doc.crystal_method = "gibbs_helmholtz"
+            doc.crystal_sweep_T = list(sweep["T"])
+            doc.crystal_sweep_H = list(sweep["H"])
+            doc.crystal_sweep_V = list(sweep["V"])
+            doc.crystal_cp_over_3R = list(sweep["cp_over_3R"])
+            doc.crystal_transition = sweep["transition"]
+            doc.crystal_warnings += sweep["warnings"]
+            doc.g_crystal = list(h.crystal_gibbs_helmholtz(ts, t0, g0, sweep))
         doc.t_crystal_anchor, doc.h_crystal_anchor, doc.g_crystal_anchor = t0, h0, g0
         doc.s_crystal_anchor = (h0 - g0) / t0 * h.EV_ATOM_TO_J_MOL
-        doc.g_crystal = list(h.crystal_gibbs_curve(ts, t0, h0, g0))
 
     if liquid is not None and quench_dir is not None:
         structure = h.structure_from(quench_dir, "final.data")

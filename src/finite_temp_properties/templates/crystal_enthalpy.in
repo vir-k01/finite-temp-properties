@@ -1,8 +1,8 @@
-# Crystal H(T0) under the target potential -> ht.dat.
+# Crystal H(T) at ONE temperature under the target potential -> ht.dat.
 #
-# Supplies the enthalpy that, with G0 = F_TI + dG_switch, defines the entropy
-# anchor S(T0) = (H(T0) - G0)/T0 for the harmonic carry
-# G(T) = H(T0) + 3R(T-T0) - T[S(T0) + 3R ln(T/T0)].
+# GibbsCurveMaker runs one of these per ladder temperature; with
+# G0 = F_TI + dG_switch at T0, the sweep is integrated by Gibbs-Helmholtz,
+# G(T) = T [G0/T0 - int_T0^T H/T'^2 dT'], so Cp(T) is the MD's own.
 #
 # The `tri` barostat lets a low-symmetry cell change SHAPE, not just volume;
 # forcing it orthogonal leaves residual shear stress that stiffens exactly

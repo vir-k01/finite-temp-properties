@@ -83,7 +83,7 @@ def configure_gibbs(gibbs_maker):
     """Point every stage of a GibbsCurveMaker at the right build."""
     configure_solid(gibbs_maker.solid_maker)
     configure_liquid(gibbs_maker.liquid_maker)
-    use_target(gibbs_maker.crystal_enthalpy_maker)   # H(T0) under the target
+    use_target(gibbs_maker.crystal_enthalpy_maker)   # H(T) sweep under the target (the ladder copies inherit it)
     use_target(gibbs_maker.quench_maker)             # H(T) under the target
 
 

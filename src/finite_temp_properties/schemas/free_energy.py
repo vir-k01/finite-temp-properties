@@ -73,6 +73,16 @@ class GibbsCurveDoc(BaseModel):
     g_crystal_anchor: Optional[float] = Field(
         None, description="G(T0) = F_TI + dG_switch, eV/atom")
     s_crystal_anchor: Optional[float] = Field(None, description="S(T0), J/mol-atom/K")
+    crystal_method: Optional[str] = Field(
+        None, description="'gibbs_helmholtz' (measured H(T) sweep) or 'harmonic_3R' (legacy carry)")
+    crystal_sweep_T: Optional[list[float]] = Field(None, description="measured T of each NPT H run, K")
+    crystal_sweep_H: Optional[list[float]] = Field(None, description="H at each sweep point, eV/atom")
+    crystal_sweep_V: Optional[list[float]] = Field(None, description="V at each sweep point, A^3/atom")
+    crystal_cp_over_3R: Optional[list[float]] = Field(
+        None, description="Cp/3R between consecutive sweep points")
+    crystal_transition: Optional[tuple[float, float]] = Field(
+        None, description="sweep interval holding a latent-heat jump; G above it is the metastable parent")
+    crystal_warnings: list[str] = Field(default_factory=list)
 
     t_melt_anchor: Optional[float] = None
     g_melt_anchor: Optional[float] = None

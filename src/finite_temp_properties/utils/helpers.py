@@ -407,6 +407,14 @@ def mean_ht(run_dir: str, natoms: int) -> tuple[float, float]:
     return float(half[:, 1].mean()), float(half[:, 2].mean()) / natoms
 
 
+def mean_htv(run_dir: str, natoms: int) -> tuple[float, float, float]:
+    """Measured mean T, enthalpy/atom and volume/atom over the back half of ht.dat."""
+    a = _table(f"{run_dir}/ht.dat", skiprows=2)
+    half = a[len(a) // 2:]
+    return (float(half[:, 1].mean()), float(half[:, 2].mean()) / natoms,
+            float(half[:, 3].mean()) / natoms)
+
+
 def binned_quench_ht(run_dir: str, natoms: int,
                      t_anchor: float) -> tuple[np.ndarray, np.ndarray]:
     """H(T) per atom, binned along the quench, for the Gibbs-Helmholtz integrand.
@@ -494,39 +502,135 @@ def uf_reference_fe(temperature: float, vol_per_atom: float, p: float,
 
 
 # ---------------------------------------------------------------------------
-# the two G(T) formulas
+# G(T): Gibbs-Helmholtz through a measured H(T), for both phases
 # ---------------------------------------------------------------------------
+
+def gibbs_helmholtz(temperatures: np.ndarray, t_anchor: float, g_anchor: float,
+                    data_T: np.ndarray, data_H: np.ndarray) -> np.ndarray:
+    """G(T) from one anchor and an NPT enthalpy curve, either side of the anchor:
+
+        G(T) = T [ G(Ta)/Ta + int_T^Ta H(T')/T'^2 dT' ]
+
+    (d(G/T)/dT = -H/T^2 at fixed P). H is linearly interpolated between the
+    measured points, so the result uses exactly the heat capacity the MD
+    produced -- no Cp model. Valid only at fixed pressure: data_H must be NPT
+    enthalpies of the SAME phase the anchor describes.
+    """
+    out = []
+    for T in temperatures:
+        grid = np.linspace(T, t_anchor, 800)
+        integral = float(np.trapezoid(np.interp(grid, data_T, data_H) / grid ** 2, grid))
+        out.append(T * (g_anchor / t_anchor + integral))
+    return np.array(out)
+
+
+def amorphous_gibbs_curve(temperatures: np.ndarray, t_anchor: float,
+                          g_anchor: float, quench_T: np.ndarray,
+                          quench_H: np.ndarray) -> np.ndarray:
+    """Gibbs-Helmholtz descent from the melt anchor over the binned quench H(T)."""
+    if temperatures.min() < quench_T.min() - 25 or \
+            t_anchor > quench_T.max() + 50:
+        raise ValueError(
+            f"quench H(T) covers {quench_T.min():.0f}-{quench_T.max():.0f} K, "
+            f"the descent needs {temperatures.min():.0f}-{t_anchor:.0f} K")
+    return gibbs_helmholtz(temperatures, t_anchor, g_anchor, quench_T, quench_H)
+
+
+def crystal_temperature_ladder(temperatures, t0: float,
+                               max_step: float = 100.0) -> list[float]:
+    """NPT temperatures for the crystal H(T) sweep: evenly spaced, at most
+    ``max_step`` apart, spanning the report grid AND the anchor, with the
+    anchor itself always on the ladder (it fixes S(T0))."""
+    lo, hi = min(min(temperatures), t0), max(max(temperatures), t0)
+    n = int(np.ceil((hi - lo) / max_step)) + 1
+    ladder = list(np.linspace(lo, hi, max(n, 2)))
+    if min(abs(t - t0) for t in ladder) > 1.0:
+        ladder.append(t0)
+    return sorted(float(round(t, 1)) for t in ladder)
+
+
+#: A crystal's classical Cp sits near 3R and rises slowly with anharmonicity
+#: (Cp/3R 1.0-1.35 up to 2000 K on the Y-Al-O oxides). An interval above
+#: CP_JUMP x 3R is latent heat -- a transformation or melting inside it.
+CP_JUMP = 2.0
+#: Below this, H is not rising like a crystal's: an unequilibrated point or a
+#: run that changed phase between neighbours. Flagged, not cut.
+CP_LOW = 0.9
+
+
+def crystal_enthalpy_sweep(points: list[tuple[float, float, float]],
+                           t0: float) -> dict:
+    """Order and screen the crystal H(T) sweep before it is integrated.
+
+    ``points`` are (measured T, H/atom, V/atom). The sweep is cut at the
+    first interval with Cp > CP_JUMP x 3R or a cell that SHRINKS on heating:
+    past that point H belongs to another phase (Y2O3 under GRACE-FS does both
+    between 1800 and 2000 K). Above the cut the parent crystal is continued
+    along its last measured slope -- G there is the METASTABLE parent, and
+    the cut is reported. A cut at or below the anchor is an error: then the
+    TI anchor itself is not the crystal it claims to be.
+    """
+    pts = sorted(points)
+    T = np.array([p[0] for p in pts])
+    H = np.array([p[1] for p in pts])
+    V = np.array([p[2] for p in pts])
+    if len(T) < 3:
+        raise ValueError(f"crystal H(T) sweep has {len(T)} points; need >= 3")
+    cp = np.diff(H) / np.diff(T) / THREE_R
+    warnings, cut = [], None
+    for i in range(1, len(T)):
+        if cp[i - 1] > CP_JUMP or V[i] < V[i - 1]:
+            cut = i
+            break
+    if cut is not None:
+        if T[cut - 1] < t0:
+            raise ValueError(
+                f"crystal transforms between {T[cut-1]:.0f} and {T[cut]:.0f} K, "
+                f"below the anchor T0 = {t0:.0f} K: the TI anchor is not this crystal")
+        warnings.append(
+            f"latent-heat jump between {T[cut-1]:.0f} and {T[cut]:.0f} K "
+            f"(Cp/3R {cp[cut-1]:.2f}, dV {100*(V[cut]/V[cut-1]-1):+.2f}%): G above "
+            f"{T[cut-1]:.0f} K is the metastable parent crystal")
+    kept = slice(0, cut) if cut is not None else slice(None)
+    for i, c in enumerate(cp[:(cut - 1) if cut is not None else None]):
+        if c < CP_LOW:
+            warnings.append(f"Cp/3R = {c:.2f} between {T[i]:.0f} and {T[i+1]:.0f} K: "
+                            f"H not rising like a crystal's -- check equilibration")
+    Tk, Hk = T[kept], H[kept]
+    if cut is not None:            # continue the parent along its last slope
+        slope = (Hk[-1] - Hk[-2]) / (Tk[-1] - Tk[-2])
+        Tk = np.r_[Tk, T.max() + 100.0]
+        Hk = np.r_[Hk, Hk[-1] + slope * (Tk[-1] - Tk[-2])]
+    return dict(T=T, H=H, V=V, cp_over_3R=cp, T_used=Tk, H_used=Hk,
+                transition=(float(T[cut - 1]), float(T[cut])) if cut is not None else None,
+                warnings=warnings)
+
 
 def crystal_gibbs_curve(temperatures: np.ndarray, t0: float, h0: float,
                         g0: float) -> np.ndarray:
-    """Classical-harmonic carry from the anchor (Cp = 3R):
+    """LEGACY classical-harmonic carry from the anchor (Cp = 3R exactly):
 
         S(T0) = (H(T0) - G(T0)) / T0
         G(T)  = H(T0) + 3R (T - T0) - T [ S(T0) + 3R ln(T/T0) ]
+
+    Freezes every formation enthalpy and entropy at T0 (all crystals share
+    Cp = 3R, so it cancels in any reaction). Kept for comparison and for
+    single-temperature runs; the default is crystal_gibbs_helmholtz.
     """
     s0 = (h0 - g0) / t0
     return h0 + THREE_R * (temperatures - t0) - temperatures * (
         s0 + THREE_R * np.log(temperatures / t0))
 
 
-def amorphous_gibbs_curve(temperatures: np.ndarray, t_anchor: float,
-                          g_anchor: float, quench_T: np.ndarray,
-                          quench_H: np.ndarray) -> np.ndarray:
-    """Gibbs-Helmholtz descent from the melt anchor (sign is +, T -> Ta):
-
-        G(T) = T [ G(Ta)/Ta + int_T^Ta H(T')/T'^2 dT' ]
-
-    Valid only at fixed pressure -- quench_H must be NPT enthalpies.
-    """
-    if temperatures.min() < quench_T.min() - 25 or \
-            t_anchor > quench_T.max() + 50:
+def crystal_gibbs_helmholtz(temperatures: np.ndarray, t0: float, g0: float,
+                            sweep: dict) -> np.ndarray:
+    """G_crystal(T) by Gibbs-Helmholtz from the TI anchor through the screened
+    NPT H(T) sweep (crystal_enthalpy_sweep). Refuses to extrapolate: the
+    sweep must cover the report grid to within 25 K at each end."""
+    T = sweep["T"]
+    if temperatures.min() < T.min() - 25 or temperatures.max() > T.max() + 25 \
+            or not T.min() - 25 <= t0 <= T.max() + 25:
         raise ValueError(
-            f"quench H(T) covers {quench_T.min():.0f}-{quench_T.max():.0f} K, "
-            f"the descent needs {temperatures.min():.0f}-{t_anchor:.0f} K")
-    out = []
-    for T in temperatures:
-        grid = np.linspace(T, t_anchor, 800)
-        integral = float(np.trapezoid(
-            np.interp(grid, quench_T, quench_H) / grid ** 2, grid))
-        out.append(T * (g_anchor / t_anchor + integral))
-    return np.array(out)
+            f"crystal H(T) covers {T.min():.0f}-{T.max():.0f} K, the curve needs "
+            f"{temperatures.min():.0f}-{temperatures.max():.0f} K and T0 = {t0:.0f} K")
+    return gibbs_helmholtz(temperatures, t0, g0, sweep["T_used"], sweep["H_used"])
